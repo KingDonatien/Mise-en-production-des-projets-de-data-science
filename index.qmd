@@ -1,0 +1,22 @@
+---
+title: "Prévision probabiliste des réserves électriques"
+author: "Adrien Barrau, Younes Iggidr, Clement Moreliere et Donation Roi"
+date: today
+format:
+  html:
+    toc: true
+    code-fold: true
+execute:
+  echo: true
+  warning: false
+---
+
+## Introduction
+
+## Données (notebook 1 & 2)
+
+## Statistiques descriptives (notebook 3)
+
+## Modélisation & Résultats (notebook 4)
+
+## Conclusion
