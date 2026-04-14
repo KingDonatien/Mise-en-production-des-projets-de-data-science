@@ -11,6 +11,9 @@ This project implements a quantile regression approach to forecast and dimension
 ```
 energymngmt_prod/
 ├── config.py              # Path configuration
+├── _quarto.yml            # Quarto configuration
+├── index.qmd              # Quarto report
+├── slides.qmd             # Quarto slides
 ├── notebooks/
 │   ├── 1_data_import.ipynb       # Data loading from S3
 │   ├── 2_input_features.ipynb    # Feature engineering
@@ -21,7 +24,7 @@ energymngmt_prod/
 │   ├── df.csv              # Processed data with features
 │   └── df_procured_reserves.csv  # Reserve cost data
 └── figures/                # Output plots
-```
+
 
 ## Installation
 
@@ -40,15 +43,6 @@ Execute in this order:
 3. **3_descriptive_stat.ipynb**: Visualize data characteristics
 4. **4_fit_results.ipynb**: Train quantile regression models, analyze results and study reserve cost
 
-### Configuration
-
-Set your personal path in `config.py`:
-
-```python
-personnal_path = r"your/path/here"
-DATA_DIR = f"{personnal_path}/energymngmt_prod/data"
-FIGURES_DIR = f"{personnal_path}/energymngmt_prod/figures"
-```
 
 ## Methodology
 
@@ -108,6 +102,7 @@ df_procured_reserves.csv:
 - pandas
 - numpy
 - matplotlib
+- pathlib
 - statsmodels
 - scipy
 - sys
@@ -119,7 +114,7 @@ This project is licensed under the MIT License. See the LICENSE file in this rep
 
 ## Authors
 
-Iggidr Younes
-Donatien Roi
 Adrien Barrau
+Younes Iggidr
 Clément Morelière
+Donatien Roi
