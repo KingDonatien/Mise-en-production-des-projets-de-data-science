@@ -1,4 +1,6 @@
-personnal_path = r"C:\Users\clemc\OneDrive\Desktop\Etude post-bac\bac+3\ENSAE\COURS\3A\S2\Mise en production\mise_en_prod_project"
+from pathlib import Path
 
-DATA_DIR = f"{personnal_path}/energymngmt_prod/data"
-FIGURES_DIR = f"{personnal_path}/energymngmt_prod/figures"
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+DATA_DIR = BASE_DIR / "Mise-en-production-des-projets-de-data-science/data"
+FIGURES_DIR = BASE_DIR / "Mise-en-production-des-projets-de-data-science/figures"
