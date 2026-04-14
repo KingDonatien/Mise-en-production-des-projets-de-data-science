@@ -1,0 +1,527 @@
+---
+title: "Prévision probabiliste des réserves électriques"
+subtitle: "Régression quantile pour le dimensionnement des réserves en marché day-ahead"
+author:
+  - Adrien Barrau
+  - Younes Iggidr
+  - Clément Morelière
+  - Donatien Roi
+date: today
+lang: fr
+format:
+  revealjs:
+    theme: default
+    slide-number: true
+    toc: true
+    toc-depth: 1
+    toc-title: "Plan"
+    transition: slide
+    code-fold: true
+    code-summary: "Afficher le code"
+    highlight-style: github
+    fig-align: center
+    footer: "Prévision probabiliste des réserves électriques"
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{python}
+#| label: setup
+#| echo: false
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import statsmodels.formula.api as smf
+from scipy.stats import chisquare
+
+DATA_DIR = "data"
+FIGURES_DIR = "figures"
+```
+
+# Contexte et Objectifs
+
+## Problématique
+
+**Charge nette** : La part de la demande à satisfaire par des sources **conventionnelles**.
+
+$\small \text{Net Load}_t = \text{Load}_t - \text{Renewables}_t$
+
+
+**Enjeu** : Les erreurs de prévision de la charge nette nécessitent des **réserves opérationnelles** pour garantir l'équilibre offre-demande.
+
+. . .
+
+**Question** : Comment dimensionner ces réserves avec une garantie probabiliste ?
+
+## Approche
+
+Pipeline en 4 étapes :
+
+1. 📥 **Importation** des données ENTSOE (S3)
+2. 🔧 **Construction des features** (lags, renouvelables, cyclique)
+3. 📊 **Statistiques descriptives**
+4. 🤖 **Régression quantile** + calibration + dimensionnement des réserves
+
+# Données
+
+## Importation et préparation
+
+```{python}
+#| label: load-data-slides
+
+df = pd.read_csv(f"{DATA_DIR}/df_raw.csv", index_col=0, parse_dates=True)
+df.index = pd.to_datetime(df.index, utc=True)
+print(f"Shape initiale  : {df.shape}")
+df = df["2024-01-01":].iloc[1:]
+print(f"Shape après 2024: {df.shape}")
+df.head(3)
+```
+
+## Construction des features {.smaller}
+
+```{python}
+#| label: feature-engineering-slides
+
+# Lags de la charge nette
+df["net_load_24"] = df["net_load"].shift(24)
+df["net_load_25"] = df["net_load"].shift(25)
+df["net_load_26"] = df["net_load"].shift(26)
+
+# Agrégat renouvelable DA et ses lags
+df["DA_renewable"] = df["DA_solar"] + df["DA_wind"]
+df["DA_renewable_1"] = df["DA_renewable"].shift(1)
+df["DA_renewable_2"] = df["DA_renewable"].shift(2)
+df["DA_renewable_3"] = df["DA_renewable"].shift(3)
+
+# Lags charge DA
+df["DA_load_1"] = df["DA_load"].shift(1)
+df["DA_load_2"] = df["DA_load"].shift(2)
+df["DA_load_3"] = df["DA_load"].shift(3)
+
+# Encodage cyclique de l'heure
+hours = df.index.hour
+df["hour_sin"] = np.sin(2 * np.pi * hours / 24)
+df["hour_cos"] = np.cos(2 * np.pi * hours / 24)
+
+input_features = [
+    "net_load_24", "net_load_25", "net_load_26",
+    "DA_renewable", "DA_renewable_1", "DA_renewable_2", "DA_renewable_3",
+    "DA_load", "DA_load_1", "DA_load_2", "DA_load_3",
+    "hour_sin", "hour_cos",
+]
+print(f"{len(input_features)} features construites.")
+```
+
+# Statistiques descriptives
+
+## Évolution de la charge nette
+
+```{python}
+#| label: fig-netload-slides
+#| fig-cap: "Évolution temporelle de la charge nette (MW)"
+
+fig, ax = plt.subplots(figsize=(11, 4))
+ax.plot(df.index, df["net_load"])
+ax.set_xlabel("Temps")
+ax.set_ylabel("Charge nette (MW)")
+fig.autofmt_xdate()
+plt.tight_layout()
+plt.show()
+```
+
+## Profils journaliers renouvelables
+
+```{python}
+#| label: fig-wind-solar-slides
+#| fig-cap: "Production éolienne et solaire : hiver vs été"
+
+df_filtered_10_01 = df.iloc[217:241, :]
+df_filtered_18_08 = df.iloc[5521:5545, :]
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 4), sharey=True)
+
+axes[0].plot(df_filtered_10_01.index, df_filtered_10_01["actual_wind"], label="Éolien")
+axes[0].plot(df_filtered_10_01.index, df_filtered_10_01["actual_solar"], label="Solaire")
+axes[0].set_title("10 janvier")
+axes[0].set_xlabel("Heure")
+axes[0].set_ylabel("Production (MW)")
+axes[0].xaxis.set_major_locator(mdates.HourLocator(interval=2))
+axes[0].xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+axes[0].grid(True, alpha=0.3)
+axes[0].legend()
+
+axes[1].plot(df_filtered_18_08.index, df_filtered_18_08["actual_wind"], label="Éolien")
+axes[1].plot(df_filtered_18_08.index, df_filtered_18_08["actual_solar"], label="Solaire")
+axes[1].set_title("18 août")
+axes[1].set_xlabel("Heure")
+axes[1].xaxis.set_major_locator(mdates.HourLocator(interval=2))
+axes[1].xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+axes[1].grid(True, alpha=0.3)
+axes[1].legend()
+
+plt.tight_layout()
+plt.show()
+```
+
+# Modélisation
+
+## Régression quantile
+
+Pour chaque quantile $q \in \{0.05, 0.10, \ldots, 0.95\}$ :
+
+$$Q_q(\text{Net Load}_t \mid X_t) = X_t^\top \beta_q$$
+
+**Sélection backward** : on retire itérativement la feature avec la plus grande p-value jusqu'au seuil de 5%.
+
+. . .
+
+**19 modèles** entraînés, un par quantile.
+
+## Algorithme de sélection backward {.smaller}
+
+```{python}
+#| label: backward-elim-slides
+
+def backward_elimination_quantreg(
+    data, target, features, q, max_iter=500, threshold=0.05
+):
+    """Sélection de variables par élimination arrière pour smf.quantreg."""
+    remaining_features = list(features)
+
+    while len(remaining_features) > 0:
+        formula = f"{target} ~ {' + '.join(remaining_features)} - 1"
+        model = smf.quantreg(formula, data=data).fit(q=q, max_iter=max_iter)
+        p_values = model.pvalues
+        max_p_value = p_values.max()
+        worst_feature = p_values.idxmax()
+
+        if max_p_value > threshold:
+            remaining_features.remove(worst_feature)
+        else:
+            break
+
+    return remaining_features
+```
+
+## Découpage train / test et entraînement
+
+```{python}
+#| label: train-test-slides
+
+df_full = pd.read_csv(f"{DATA_DIR}/df.csv", index_col=0, parse_dates=True)
+df_train = df_full[:"2024-12-31"]
+df_test  = df_full["2025-01-01":]
+df_train_clean = df_train.dropna(subset=["net_load"] + input_features)
+df_test_clean  = df_test.dropna(subset=["net_load"] + input_features)
+
+print(f"Train : {len(df_train_clean)} obs  |  Test : {len(df_test_clean)} obs")
+
+n = 19
+quantiles = np.linspace(1 / (n + 1), n / (n + 1), n)
+quantile_input_features = {}
+quantile_reg = {}
+
+for q in quantiles:
+    q_round = round(q, 2)
+    quantile_input_features[q] = backward_elimination_quantreg(
+        df_train_clean, "net_load", input_features, q
+    )
+    formula = f"net_load ~ {' + '.join(quantile_input_features[q])} + 0"
+    quantile_reg[q_round] = smf.quantreg(formula, data=df_train_clean).fit(
+        q=q, max_iter=25000
+    )
+
+print(f"{len(quantile_reg)} modèles entraînés.")
+```
+
+# Résultats
+
+## Calibration PIT — données d'entraînement
+
+```{python}
+#| label: fig-pit-train-slides
+#| echo: false
+#| fig-cap: "PIT Histogram (train)"
+
+quantile_value = {}
+for q in quantiles:
+    q_round = round(q, 2)
+    quantile_value[q_round] = quantile_reg[q_round].predict(df_train_clean)
+
+pred_df = pd.DataFrame(quantile_value, index=df_train_clean.index)
+sorted_pred_matrix = np.sort(pred_df.values, axis=1)
+
+def get_cdf_value(y_observed, quantile_row):
+    idx = np.searchsorted(quantile_row, y_observed)
+    return idx / n
+
+df_train_clean = df_train_clean.copy()
+df_train_clean["cdf_value"] = [
+    get_cdf_value(y, row)
+    for y, row in zip(df_train_clean["net_load"], sorted_pred_matrix)
+]
+
+plt.figure(figsize=(9, 4))
+plt.hist(df_train_clean["cdf_value"], bins=20, density=True,
+         color="skyblue", edgecolor="black", alpha=0.7, label="Distribution PIT")
+plt.axhline(y=1.0, color="red", linestyle="--", linewidth=2, label="Calibration parfaite")
+plt.title("Histogramme PIT (train)", fontsize=13)
+plt.xlabel("Probabilité cumulée $F_t(y)$")
+plt.ylabel("Densité")
+plt.xlim(0, 1); plt.ylim(0, 2)
+plt.legend(); plt.grid(axis="y", alpha=0.3)
+plt.tight_layout(); plt.show()
+```
+
+## Test Chi² (train)
+
+```{python}
+#| label: chi2-train-slides
+
+bins = np.linspace(0, 1, 21)
+observed_counts, _ = np.histogram(df_train_clean["cdf_value"], bins=bins)
+expected_counts = np.full(20, len(df_train_clean["cdf_value"]) / 20)
+stat, p_value = chisquare(f_obs=observed_counts, f_exp=expected_counts)
+
+print(f"Chi² : {stat:.4f}  |  P-value : {p_value:.4f}")
+print("→ Calibration validée." if p_value > 0.05 else "→ Calibration non validée.")
+```
+
+## Intervalles de prévision (train)
+
+```{python}
+#| label: fig-forecasts-train-slides
+#| echo: false
+#| fig-cap: "100 premières observations — données d'entraînement"
+
+L = 100
+df_plot = df_train_clean.head(L).copy()
+preds_plot = sorted_pred_matrix[:L, :]
+q_low  = preds_plot[:, 1]
+q_med  = preds_plot[:, 7]
+q_high = preds_plot[:, 13]
+
+plt.figure(figsize=(11, 5))
+plt.fill_between(df_plot.index, q_low, q_high, color="gray", alpha=0.3, label="Intervalle 90%")
+plt.plot(df_plot.index, q_med, color="blue", marker="o", label="Médiane (Q0.50)", linewidth=2)
+plt.plot(df_plot.index, df_plot["net_load"], color="red", marker="x", label="Réel", linewidth=2)
+plt.title("Intervalles de prévision (train — 100 obs)", fontsize=13)
+plt.xlabel("Temps"); plt.ylabel("Charge nette (MW)")
+plt.legend(); plt.grid(True, alpha=0.3)
+plt.xticks(rotation=45); plt.tight_layout(); plt.show()
+```
+
+## Calibration PIT — données de test
+
+```{python}
+#| label: fig-pit-test-slides
+#| echo: false
+#| fig-cap: "PIT Histogram (test)"
+
+quantile_value_test = {}
+for q in quantiles:
+    q_round = round(q, 2)
+    quantile_value_test[q_round] = quantile_reg[q_round].predict(df_test_clean)
+
+pred_df_test = pd.DataFrame(quantile_value_test, index=df_test_clean.index)
+sorted_pred_matrix_test = np.sort(pred_df_test.values, axis=1)
+
+df_test_clean = df_test_clean.copy()
+df_test_clean["cdf_value"] = [
+    get_cdf_value(y, row)
+    for y, row in zip(df_test_clean["net_load"], sorted_pred_matrix_test)
+]
+
+plt.figure(figsize=(9, 4))
+plt.hist(df_test_clean["cdf_value"], bins=20, density=True,
+         color="skyblue", edgecolor="black", alpha=0.7, label="Distribution PIT")
+plt.axhline(y=1.0, color="red", linestyle="--", linewidth=2, label="Calibration parfaite")
+plt.title("Histogramme PIT (test)", fontsize=13)
+plt.xlabel("Probabilité cumulée $F_t(y)$")
+plt.ylabel("Densité")
+plt.xlim(0, 1); plt.ylim(0, 2)
+plt.legend(); plt.grid(axis="y", alpha=0.3)
+plt.tight_layout(); plt.show()
+```
+
+## Test Chi² (test)
+
+```{python}
+#| label: chi2-test-slides
+
+bins = np.linspace(0, 1, 21)
+obs_test, _ = np.histogram(df_test_clean["cdf_value"], bins=bins)
+exp_test = np.full(20, len(df_test_clean["cdf_value"]) / 20)
+stat_t, p_val_t = chisquare(f_obs=obs_test, f_exp=exp_test)
+
+print(f"Chi² : {stat_t:.4f}  |  P-value : {p_val_t:.4f}")
+print("→ Calibration validée." if p_val_t > 0.05 else "→ Calibration non validée.")
+```
+
+## Intervalles de prévision (test)
+
+```{python}
+#| label: fig-forecasts-test-slides
+#| echo: false
+#| fig-cap: "100 premières observations — données de test"
+
+epsilons = [(i + 1) / 100 for i in range(15)]
+eps_input_features = {}
+eps_reg = {}
+for eps in epsilons:
+    eps_input_features[1 - eps] = backward_elimination_quantreg(
+        df_train_clean, "net_load", input_features, 1 - eps
+    )
+    formula = f"net_load ~ {' + '.join(eps_input_features[1 - eps])} + 0"
+    eps_reg[eps] = smf.quantreg(formula, data=df_train_clean).fit(q=1 - eps, max_iter=25000)
+
+eps_value_test = {}
+for eps in epsilons:
+    eps_value_test[eps] = eps_reg[eps].predict(df_test_clean)
+
+pred_df_eps = pd.DataFrame(eps_value_test, index=df_test_clean.index)
+sorted_pred_matrix_eps = np.sort(pred_df_eps.values, axis=1)
+for eps, predictions in eps_value_test.items():
+    df_test_clean[f"quantile_1-{eps:.2f}"] = predictions
+
+L = 100
+df_plot_test = df_test_clean.head(L).copy()
+preds_plot_test = sorted_pred_matrix_eps[:L, :]
+q_low_t  = preds_plot_test[:, 1]
+q_med_t  = preds_plot_test[:, 7]
+q_high_t = preds_plot_test[:, 13]
+
+plt.figure(figsize=(11, 5))
+plt.fill_between(df_plot_test.index, q_low_t, q_high_t, color="gray", alpha=0.3, label="Intervalle 90%")
+plt.plot(df_plot_test.index, q_med_t, color="blue", marker="o", label="Médiane (Q0.50)", linewidth=2)
+plt.plot(df_plot_test.index, df_plot_test["net_load"], color="red", marker="x", label="Réel", linewidth=2)
+plt.title("Intervalles de prévision (test — 100 obs)", fontsize=13)
+plt.xlabel("Temps"); plt.ylabel("Charge nette (MW)")
+plt.legend(); plt.grid(True, alpha=0.3)
+plt.xticks(rotation=45); plt.tight_layout(); plt.show()
+```
+
+# Dimensionnement des réserves
+
+## Formule de dimensionnement {.smaller}
+
+$$R_t \geq F^{-1}(1 - \varepsilon) - E_t$$
+
+- $E_t = \text{DA_load}_t - \text{DA_renewable}_t$ : prévision ENTSOE
+- $F^{-1}(1-\varepsilon)$ : quantile $(1-\varepsilon)$ du modèle
+- $\varepsilon$ : niveau de risque cible
+
+. . .
+
+| $\varepsilon$ faible | $\varepsilon$ élevé |
+|---|---|
+| Couverture élevée | Couverture faible |
+| Réserves importantes | Réserves réduites |
+| Coût élevé | Coût réduit |
+
+## Calcul et vérification des réserves {.smaller}
+
+```{python}
+#| label: compute-reserves-slides
+
+Rs = []
+for eps in epsilons:
+    df_test_clean[f"R({eps:.2f})"] = (
+        df_test_clean[f"quantile_1-{eps:.2f}"]
+        - (df_test_clean["DA_load"] - df_test_clean["DA_renewable"])
+    )
+    v = (
+        df_test_clean["net_load"]
+        - (df_test_clean["DA_load"] - df_test_clean["DA_renewable"])
+        > df_test_clean[f"R({eps:.2f})"]
+    ).mean()
+    print(f"P(erreur > R({eps:.2f})) = {v:.4f}")
+    Rs.append(f"R({eps:.2f})")
+```
+
+## Métriques clés (ε = 0.01)
+
+```{python}
+#| label: metrics-slides
+
+average_reserve = df_test_clean[Rs]["R(0.01)"].mean()
+under_cov = (
+    df_test_clean["net_load"]
+    - (df_test_clean["DA_load"] - df_test_clean["DA_renewable"])
+    > df_test_clean["R(0.01)"]
+).sum() / len(df_test_clean)
+
+print(f"Réserve moyenne     : {average_reserve:.2f} MW")
+print(f"Sous-couverture     : {under_cov:.4f} ({under_cov*100:.2f}%)")
+```
+
+## Arbitrage coût–fiabilité
+
+```{python}
+#| label: fig-cost-reliability-slides
+#| echo: false
+#| fig-cap: "Compromis coût–fiabilité en fonction de ε"
+
+df_reserves = pd.read_csv(f"{DATA_DIR}/df_procured_reserves.csv", sep=";")
+df_r = df_reserves.copy()
+df_r.columns = ["date","time_slot","reserve_type","product_type","direction","quantity_mw","price_eur_mw_15min","temporality"]
+df_r["price_eur_mw_15min"] = df_r["price_eur_mw_15min"].astype(str).str.replace(",",".",regex=False).astype(float)
+df_r["start_time"] = df_r["time_slot"].str.slice(0, 5)
+df_r["datetime"] = pd.to_datetime(df_r["date"] + " " + df_r["start_time"], dayfirst=True)
+df_r["hour"] = df_r["datetime"].dt.floor("H")
+hourly_price_sum = df_r.groupby(df_r["hour"])["price_eur_mw_15min"].sum().reset_index(name="hourly_price_eur_mw")
+average_reserve_cost = hourly_price_sum["hourly_price_eur_mw"].mean()
+
+epsilons_arr = np.round(np.arange(0.01, 0.16, 0.01), 2)
+forecast_error = df_test_clean["net_load"] - (df_test_clean["DA_load"] - df_test_clean["DA_renewable"])
+under_coverage_freq = [(forecast_error > df_test_clean[f"R({eps:.2f})"]).sum() / len(df_test_clean) for eps in epsilons_arr]
+average_reserves = df_test_clean[Rs].mean()
+df_average_reserve_cost = pd.DataFrame({"epsilon": epsilons_arr, "average_reserve_cost": average_reserves.values * average_reserve_cost})
+df_under_coverage = pd.DataFrame({"epsilon": epsilons_arr, "under_coverage_frequency": under_coverage_freq})
+
+fig, ax1 = plt.subplots(figsize=(9, 5))
+ax1.plot(df_average_reserve_cost["epsilon"], df_average_reserve_cost["average_reserve_cost"] / 1e3, color="tab:blue")
+ax1.set_xlabel("Niveau de risque cible $\\varepsilon$")
+ax1.set_ylabel("Coût moyen des réserves (k€ / h)", color="tab:blue")
+ax1.tick_params(axis="y", labelcolor="tab:blue")
+ax1.grid(True, alpha=0.3)
+
+ax2 = ax1.twinx()
+ax2.plot(df_under_coverage["epsilon"], df_under_coverage["under_coverage_frequency"], linestyle="--", color="tab:orange")
+ax2.set_ylabel("Fréquence de sous-couverture", color="tab:orange")
+ax2.tick_params(axis="y", labelcolor="tab:orange")
+plt.tight_layout(); plt.show()
+```
+
+# Conclusion
+
+## Synthèse
+
+✅ **Features pertinentes** : lags net load, prévisions renouvelables et charge DA, encodage horaire cyclique
+
+. . .
+
+✅ **19 modèles de régression quantile** avec sélection backward (seuil p-value 5%)
+
+. . .
+
+✅ **Calibration probabiliste validée** (PIT uniforme, test Chi² non rejeté)
+
+. . .
+
+✅ **Dimensionnement flexible** : $R_t \geq F^{-1}(1-\varepsilon) - E_t$ avec arbitrage coût–fiabilité explicite
+
+## Perspectives
+
+- Modèles non-linéaires (gradient boosting quantile)
+- Extension à d'autres marchés / zones géographiques
+- Intégration dans un pipeline de mise à jour automatique (GitHub Actions)
+- Tests de couverture conditionnelle (Christoffersen, Dynamic Quantile)
+
+---
+
+*Merci pour votre attention.*
