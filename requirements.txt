@@ -80,7 +80,7 @@ nbclient==0.10.4
 nbformat==5.10.4
 nest-asyncio==1.6.0
 nltk==3.9.4
-numpy==2.4.4
+numpy==2.2.0
 nvidia-nccl-cu12==2.29.7
 opentelemetry-api==1.40.0
 opentelemetry-proto==1.40.0
