@@ -127,7 +127,7 @@ rpds-py==0.30.0
 ruff==0.15.9
 s3fs==2026.3.0
 scikit-learn>=1.7.0
-scipy==1.17.1
+scipy>=1.15.0
 seaborn==0.13.2
 setuptools==82.0.1
 shapely==2.1.2
