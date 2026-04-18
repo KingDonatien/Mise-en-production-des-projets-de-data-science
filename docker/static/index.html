@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NetLoad Forecast</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,300&display=swap" rel="stylesheet" />
+  <style>
+    /* ── Reset & tokens ──────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #080c10;
+      --surface:   #0d1117;
+      --panel:     #161b22;
+      --border:    #21262d;
+      --border-hi: #30363d;
+      --text:      #e6edf3;
+      --sub:       #8b949e;
+      --accent:    #58a6ff;
+      --accent-lo: rgba(88,166,255,.12);
+      --orange:    #f0883e;
+      --orange-lo: rgba(240,136,62,.12);
+      --red:       #ff7b72;
+      --green:     #3fb950;
+      --mono:      "Space Mono", monospace;
+      --sans:      "DM Sans", sans-serif;
+      --radius:    10px;
+      --shadow:    0 8px 32px rgba(0,0,0,.5);
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-weight: 400;
+      line-height: 1.6;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Noise grain overlay ─────────────────────────────────────────────── */
+    body::before {
+      content: "";
+      position: fixed; inset: 0; z-index: 0;
+      opacity: .025;
+      pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+      background-size: 128px;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────── */
+    .wrap { position: relative; z-index: 1; max-width: 960px; margin: 0 auto; padding: 0 24px 80px; }
+
+    /* ── Header ──────────────────────────────────────────────────────────── */
+    header {
+      padding: 52px 0 40px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 48px;
+    }
+    .logo-row {
+      display: flex; align-items: center; gap: 14px; margin-bottom: 10px;
+    }
+    .logo-icon {
+  width: 38px; 
+  height: 38px;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--orange) 100%);
+  border-radius: 8px;
+  display: flex; 
+  align-items: center; 
+  justify-content: center;
+  font-size: 18px; 
+  flex-shrink: 0;
+}
+
+h1 {
+  font-family: var(--mono);
+  font-size: clamp(1.4rem, 4vw, 1.9rem);
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  background: linear-gradient(90deg, var(--text) 40%, var(--sub));
+  -webkit-background-clip: text;
+  background-clip: text; /* Standard property added for compatibility */
+  -webkit-text-fill-color: transparent;
+  color: transparent; /* Recommended standard fallback for text-fill-color */
+}
+
+.tagline {
+  color: var(--sub); 
+  font-size: .9rem; 
+  font-weight: 300; 
+  max-width: 540px;
+}
+
+.tagline strong { 
+  color: var(--accent); 
+  font-weight: 500; 
+}
+
+    /* ── Step badges ─────────────────────────────────────────────────────── */
+    .steps {
+      display: flex; gap: 8px; flex-wrap: wrap;
+      margin-bottom: 32px;
+    }
+    .step-badge {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 20px; padding: 5px 14px 5px 8px;
+      font-size: .78rem; color: var(--sub); font-family: var(--mono);
+    }
+    .step-badge .num {
+      width: 20px; height: 20px; border-radius: 50%;
+      background: var(--accent-lo); color: var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      font-size: .7rem; font-weight: 700; flex-shrink: 0;
+    }
+    .step-badge span { color: var(--text); }
+
+    /* ── Upload card ─────────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px 28px;
+      box-shadow: var(--shadow);
+      margin-bottom: 24px;
+    }
+    .card-title {
+      font-family: var(--mono); font-size: .8rem; font-weight: 700;
+      color: var(--sub); letter-spacing: 1.2px; text-transform: uppercase;
+      margin-bottom: 20px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .card-title::before {
+      content: ""; display: block;
+      width: 3px; height: 14px; border-radius: 2px;
+      background: linear-gradient(to bottom, var(--accent), var(--orange));
+    }
+
+    /* ── Drop zone ───────────────────────────────────────────────────────── */
+    .drop-zone {
+      border: 2px dashed var(--border-hi);
+      border-radius: var(--radius);
+      padding: 40px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      position: relative;
+    }
+    .drop-zone:hover, .drop-zone.drag-over {
+      border-color: var(--accent);
+      background: var(--accent-lo);
+    }
+    .drop-zone input[type="file"] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+    }
+    .drop-icon { font-size: 2.2rem; margin-bottom: 10px; display: block; }
+    .drop-text  { font-size: .95rem; color: var(--sub); }
+    .drop-text strong { color: var(--accent); font-weight: 500; }
+    .file-name {
+      margin-top: 12px; font-family: var(--mono); font-size: .8rem;
+      color: var(--green); display: none;
+    }
+
+    /* ── Options row ─────────────────────────────────────────────────────── */
+    .options {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px;
+    }
+    @media (max-width: 600px) { .options { grid-template-columns: 1fr; } }
+
+    .field label {
+      display: block; font-size: .78rem; font-weight: 500; color: var(--sub);
+      font-family: var(--mono); letter-spacing: .5px; margin-bottom: 6px;
+    }
+    .field input[type="text"],
+    .field input[type="date"] {
+      width: 100%; background: var(--panel); border: 1px solid var(--border-hi);
+      border-radius: 6px; padding: 9px 12px; color: var(--text);
+      font-family: var(--mono); font-size: .85rem;
+      transition: border-color .2s, box-shadow .2s;
+      outline: none;
+    }
+    .field input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-lo);
+    }
+    /* placeholder */
+    .field input::placeholder { color: var(--border-hi); }
+
+    /* ── Toggle ──────────────────────────────────────────────────────────── */
+    .toggle-row {
+      display: flex; align-items: center; gap: 12px;
+      margin-top: 8px;
+    }
+    .toggle-row label { font-size: .85rem; color: var(--sub); cursor: pointer; user-select: none; }
+    .toggle-row label strong { color: var(--text); }
+    .switch { position: relative; display: inline-block; width: 40px; height: 22px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; inset: 0;
+      background: var(--border-hi); border-radius: 22px;
+      cursor: pointer; transition: background .2s;
+    }
+    .slider::before {
+      content: ""; position: absolute;
+      width: 16px; height: 16px; left: 3px; top: 3px;
+      background: var(--text); border-radius: 50%;
+      transition: transform .2s;
+    }
+    .switch input:checked + .slider { background: var(--accent); }
+    .switch input:checked + .slider::before { transform: translateX(18px); }
+
+    /* ── Submit button ───────────────────────────────────────────────────── */
+    .btn-run {
+      margin-top: 24px; width: 100%;
+      padding: 13px; border: none; border-radius: var(--radius);
+      background: linear-gradient(90deg, var(--accent), #388bfd);
+      color: #fff; font-family: var(--mono); font-size: .9rem; font-weight: 700;
+      letter-spacing: .5px; cursor: pointer;
+      transition: opacity .2s, transform .1s, box-shadow .2s;
+      box-shadow: 0 4px 20px rgba(88,166,255,.25);
+    }
+    .btn-run:hover:not(:disabled) { opacity: .88; box-shadow: 0 4px 28px rgba(88,166,255,.4); }
+    .btn-run:active:not(:disabled) { transform: scale(.99); }
+    .btn-run:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* ── Progress / status bar ───────────────────────────────────────────── */
+    #status-bar {
+      display: none;
+      margin-top: 16px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+    }
+    #status-bar.visible { display: flex; align-items: center; gap: 14px; }
+    .spinner {
+      width: 20px; height: 20px; flex-shrink: 0;
+      border: 2px solid var(--border-hi);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #status-msg { font-size: .85rem; color: var(--sub); }
+
+    /* ── CSV schema hint ─────────────────────────────────────────────────── */
+    .schema-hint {
+      margin-top: 20px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--orange);
+      border-radius: var(--radius);
+      padding: 14px 18px;
+    }
+    .schema-hint p { font-size: .8rem; color: var(--sub); margin-bottom: 8px; }
+    .schema-hint p strong { color: var(--orange); font-weight: 500; }
+    .schema-cols { display: flex; gap: 8px; flex-wrap: wrap; }
+    .col-pill {
+      font-family: var(--mono); font-size: .72rem;
+      background: var(--orange-lo); color: var(--orange);
+      border: 1px solid rgba(240,136,62,.3);
+      border-radius: 4px; padding: 2px 8px;
+    }
+    .col-pill.optional { background: var(--accent-lo); color: var(--accent); border-color: rgba(88,166,255,.3); }
+
+    /* ── Results section ─────────────────────────────────────────────────── */
+    #results { display: none; animation: fadeUp .4s ease; }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(18px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Stat strip ──────────────────────────────────────────────────────── */
+    .stats-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .stat {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+    }
+    .stat-label { font-size: .72rem; font-family: var(--mono); color: var(--sub); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 4px; }
+    .stat-value { font-family: var(--mono); font-size: 1.25rem; font-weight: 700; color: var(--text); }
+    .stat-value.accent { color: var(--accent); }
+    .stat-value.orange { color: var(--orange); }
+
+    /* ── Chart wrapper ───────────────────────────────────────────────────── */
+    .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-bottom: 20px;
+      box-shadow: var(--shadow);
+    }
+    .chart-header {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 10px;
+    }
+    .chart-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--orange));
+    }
+    .chart-label {
+      font-family: var(--mono); font-size: .78rem; color: var(--sub); font-weight: 700;
+      text-transform: uppercase; letter-spacing: .9px;
+    }
+    .chart-card img { display: block; width: 100%; height: auto; }
+
+    /* ── Error box ───────────────────────────────────────────────────────── */
+    .error-box {
+      display: none;
+      background: rgba(255,123,114,.08);
+      border: 1px solid rgba(255,123,114,.3);
+      border-radius: var(--radius);
+      padding: 14px 18px;
+      margin-top: 16px;
+      font-size: .85rem;
+      color: var(--red);
+    }
+    .error-box.visible { display: block; }
+
+    /* ── Divider ─────────────────────────────────────────────────────────── */
+    .section-divider {
+      display: flex; align-items: center; gap: 14px;
+      margin: 36px 0 24px;
+    }
+    .section-divider span {
+      font-family: var(--mono); font-size: .75rem; font-weight: 700;
+      color: var(--sub); text-transform: uppercase; letter-spacing: 1px; white-space: nowrap;
+    }
+    .section-divider::before, .section-divider::after {
+      content: ""; flex: 1; height: 1px; background: var(--border);
+    }
+
+    /* ── Footer ──────────────────────────────────────────────────────────── */
+    footer {
+      margin-top: 64px;
+      border-top: 1px solid var(--border);
+      padding-top: 24px;
+      font-size: .78rem;
+      color: var(--border-hi);
+      font-family: var(--mono);
+      display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;
+    }
+    footer a { color: var(--accent); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- Header -->
+  <header>
+    <div class="logo-row">
+      <div class="logo-icon">⚡</div>
+      <h1>NetLoad Forecast</h1>
+    </div>
+    <p class="tagline">
+      Probabilistic day-ahead net load forecasting via
+      <strong>quantile regression</strong> with backward feature selection.
+      19 quantiles · Q0.05 → Q0.95
+    </p>
+  </header>
+
+  <!-- Steps -->
+  <div class="steps">
+    <div class="step-badge"><div class="num">1</div><span>Upload CSV</span></div>
+    <div class="step-badge"><div class="num">2</div><span>Set split date</span></div>
+    <div class="step-badge"><div class="num">3</div><span>Train model</span></div>
+    <div class="step-badge"><div class="num">4</div><span>View forecast</span></div>
+  </div>
+
+  <!-- Upload card -->
+  <div class="card">
+    <div class="card-title">Configuration</div>
+
+    <div class="drop-zone" id="drop-zone">
+      <input type="file" id="csv-input" accept=".csv" />
+      <span class="drop-icon">📂</span>
+      <p class="drop-text"><strong>Click to browse</strong> or drag &amp; drop your CSV here</p>
+      <p class="file-name" id="file-name"></p>
+    </div>
+
+    <div class="options">
+      <div class="field">
+        <label>TRAIN / TEST SPLIT DATE</label>
+        <input type="date" id="train-end-date" placeholder="YYYY-MM-DD" />
+      </div>
+      <div class="field" style="display:flex;flex-direction:column;justify-content:flex-end;">
+        <label style="margin-bottom:10px;">FEATURE SELECTION</label>
+        <div class="toggle-row">
+          <label class="switch">
+            <input type="checkbox" id="backward-sel" checked />
+            <span class="slider"></span>
+          </label>
+          <label for="backward-sel"><strong>Backward p-value elimination</strong><br>
+            <span style="font-size:.75rem">Slower but more parsimonious</span></label>
+        </div>
+      </div>
+    </div>
+
+    <button class="btn-run" id="run-btn" onclick="runForecast()">
+      ▶ &nbsp; Run Forecast
+    </button>
+
+    <div id="status-bar">
+      <div class="spinner"></div>
+      <span id="status-msg">Training model…</span>
+    </div>
+    <div class="error-box" id="error-box"></div>
+
+    <!-- Schema hint -->
+    <div class="schema-hint">
+      <p><strong>Required CSV columns</strong> (hourly, UTC datetime index)</p>
+      <div class="schema-cols">
+        <span class="col-pill">datetime (index)</span>
+        <span class="col-pill">net_load</span>
+        <span class="col-pill">DA_load</span>
+        <span class="col-pill">DA_solar</span>
+        <span class="col-pill">DA_wind</span>
+        <span class="col-pill optional">DA_renewable (auto-computed)</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div id="results">
+
+    <!-- Stats strip -->
+    <div class="section-divider"><span>Results</span></div>
+    <div class="stats-strip" id="stats-strip"></div>
+
+    <!-- Chart: forecast intervals (test) -->
+    <div class="chart-card" id="chart-forecast-test">
+      <div class="chart-header">
+        <div class="chart-dot"></div>
+        <span class="chart-label">Probabilistic Forecast — Test Period</span>
+      </div>
+      <img id="img-forecast-test" alt="forecast intervals test" />
+    </div>
+
+    <!-- Chart: forecast intervals (train) -->
+    <div class="chart-card" id="chart-forecast-train">
+      <div class="chart-header">
+        <div class="chart-dot" style="background:var(--orange)"></div>
+        <span class="chart-label">Probabilistic Forecast — Training Period (first 500 h)</span>
+      </div>
+      <img id="img-forecast-train" alt="forecast intervals train" />
+    </div>
+
+    <!-- PIT histograms side by side -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;" id="pit-row">
+      <div class="chart-card">
+        <div class="chart-header">
+          <div class="chart-dot" style="background:var(--green)"></div>
+          <span class="chart-label">PIT — Train</span>
+        </div>
+        <img id="img-pit-train" alt="PIT train" />
+      </div>
+      <div class="chart-card">
+        <div class="chart-header">
+          <div class="chart-dot" style="background:var(--green)"></div>
+          <span class="chart-label">PIT — Test</span>
+        </div>
+        <img id="img-pit-test" alt="PIT test" />
+      </div>
+    </div>
+
+    <!-- Cost / reliability -->
+    <div class="chart-card">
+      <div class="chart-header">
+        <div class="chart-dot" style="background:var(--orange)"></div>
+        <span class="chart-label">Cost–Reliability Trade-off (Reserve Dimensioning)</span>
+      </div>
+      <img id="img-cost-rel" alt="cost reliability" />
+    </div>
+
+  </div><!-- /results -->
+
+  <footer>
+    <span>NetLoad Forecast · Quantile Regression</span>
+    <a href="/docs" target="_blank">API docs →</a>
+  </footer>
+
+</div><!-- /wrap -->
+
+<script>
+  // ── Drag-drop ──────────────────────────────────────────────────────────────
+  const dropZone = document.getElementById('drop-zone');
+  const csvInput = document.getElementById('csv-input');
+  const fileNameEl = document.getElementById('file-name');
+
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault(); dropZone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) {
+      csvInput.files = e.dataTransfer.files;
+      showFileName(e.dataTransfer.files[0].name);
+    }
+  });
+  csvInput.addEventListener('change', () => {
+    if (csvInput.files.length) showFileName(csvInput.files[0].name);
+  });
+  function showFileName(name) {
+    fileNameEl.textContent = '✓ ' + name;
+    fileNameEl.style.display = 'block';
+  }
+
+  // ── Status helpers ─────────────────────────────────────────────────────────
+  function setStatus(msg, visible=true) {
+    const bar = document.getElementById('status-bar');
+    document.getElementById('status-msg').textContent = msg;
+    bar.classList.toggle('visible', visible);
+  }
+  function showError(msg) {
+    const box = document.getElementById('error-box');
+    box.textContent = '⚠  ' + msg;
+    box.classList.add('visible');
+  }
+  function clearError() {
+    document.getElementById('error-box').classList.remove('visible');
+  }
+
+  // ── Main forecast call ─────────────────────────────────────────────────────
+  async function runForecast() {
+    clearError();
+    document.getElementById('results').style.display = 'none';
+
+    const file = csvInput.files[0];
+    if (!file) { showError('Please select a CSV file first.'); return; }
+
+    const btn = document.getElementById('run-btn');
+    btn.disabled = true;
+    setStatus('Uploading & parsing CSV…');
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const dateVal = document.getElementById('train-end-date').value;
+    if (dateVal) formData.append('train_end_date', dateVal);
+
+    const bwSel = document.getElementById('backward-sel').checked;
+    formData.append('use_backward_selection', bwSel);
+
+    // Progress message cycling
+    const msgs = [
+      'Engineering features…',
+      'Running backward feature selection…',
+      'Fitting quantile regressions (this may take a few minutes)…',
+      'Generating forecast & charts…',
+    ];
+    let msgIdx = 0;
+    const msgTimer = setInterval(() => {
+      msgIdx = (msgIdx + 1) % msgs.length;
+      setStatus(msgs[msgIdx]);
+    }, 6000);
+
+    try {
+      const resp = await fetch('/forecast', { method: 'POST', body: formData });
+      clearInterval(msgTimer);
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+        throw new Error(err.detail || resp.statusText);
+      }
+
+      const data = await resp.json();
+      setStatus('Rendering results…');
+      renderResults(data);
+
+    } catch (e) {
+      clearInterval(msgTimer);
+      showError(e.message);
+    } finally {
+      clearInterval(msgTimer);
+      setStatus('', false);
+      btn.disabled = false;
+    }
+  }
+
+  // ── Render results ─────────────────────────────────────────────────────────
+  function renderResults(d) {
+    // Stats
+    const strip = document.getElementById('stats-strip');
+    strip.innerHTML = `
+      <div class="stat"><div class="stat-label">Train samples</div><div class="stat-value accent">${d.n_train_samples.toLocaleString()}</div></div>
+      <div class="stat"><div class="stat-label">Test samples</div><div class="stat-value orange">${d.n_test_samples.toLocaleString()}</div></div>
+      <div class="stat"><div class="stat-label">Train end</div><div class="stat-value" style="font-size:.85rem">${d.train_period.end.slice(0,10)}</div></div>
+      <div class="stat"><div class="stat-label">Test start</div><div class="stat-value" style="font-size:.85rem">${d.test_period.start.slice(0,10)}</div></div>
+      <div class="stat"><div class="stat-label">Quantiles</div><div class="stat-value">19</div></div>
+    `;
+
+    // Charts
+    function setImg(id, b64) {
+      if (b64) document.getElementById(id).src = 'data:image/png;base64,' + b64;
+    }
+    setImg('img-forecast-test',  d.charts.forecast_test);
+    setImg('img-forecast-train', d.charts.forecast_train);
+    setImg('img-pit-train',      d.charts.pit_train);
+    setImg('img-pit-test',       d.charts.pit_test);
+    setImg('img-cost-rel',       d.charts.cost_reliability);
+
+    // Show results
+    const res = document.getElementById('results');
+    res.style.display = 'block';
+    res.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+</script>
+</body>
+</html>
